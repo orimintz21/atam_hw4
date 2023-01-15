@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <fcntl.h>
 #include "elf64.h"
+#include "read_elf_func.h"
 
 #define ET_NONE 0 // No file type
 #define ET_REL 1  // Relocatable file
