@@ -21,7 +21,7 @@
 #define RELOCATABLE_ADDRESS 0
 
 void getArgs(int argc, char *argv[], char **func_name, char **exe_file_name);
-pid_t runTarget(const char *func, char **argv);
+pid_t runTarget(char *func);
 void runFuncCounter(pid_t child_pid, unsigned long func_addr, bool is_relocatable);
 long putBreakpointInFunc(unsigned long func_address, pid_t child_pid);
 void removeBreakpoint(pid_t child_pid, unsigned long func_addr, unsigned long data);
@@ -39,9 +39,10 @@ void getArgs(int argc, char *argv[], char **func_name, char **exe_file_name)
     *exe_file_name = argv[2];
 }
 
-pid_t runTarget(const char *func, char **argv)
+pid_t runTarget(char *func)
 {
     pid_t pid = fork();
+    char *argv[] = {func, NULL};
 
     if (pid > 0)
     {
@@ -54,7 +55,11 @@ pid_t runTarget(const char *func, char **argv)
             perror("ptrace");
             exit(1);
         }
-        execl(func, *(argv + 2), NULL);
+        if (execv(func, argv) < 0)
+        {
+            perror("execv");
+            exit(1);
+        }
     }
     else
     {
@@ -149,7 +154,7 @@ void runFuncCounter(pid_t child_pid, unsigned long func_addr, bool is_relocatabl
         {
             calls_counter++;
             ptrace(PTRACE_GETREGS, child_pid, NULL, &regs);
-            printf("PRF:: run #%d returned with %d\n", calls_counter, regs.rax);
+            printf("PRF:: run #%d returned with %llu\n", calls_counter, regs.rax);
             removeBreakpoint(child_pid, ret_address, ret_data);
             if (calls_counter == 1 && is_relocatable)
             {
@@ -164,13 +169,14 @@ void runFuncCounter(pid_t child_pid, unsigned long func_addr, bool is_relocatabl
             printf("We have a stupid problem\n");
         }
     }
+    printf("PRF:: %s was called %d times\n", "checkPassword", calls_counter);
 }
 
 int main(int argc, char *argv[])
 {
-    char *func_name;
-    char *exe_file_name;
-    getArgs(argc, argv, &func_name, &exe_file_name);
+    char *func_name = "checkPassword";
+    char *exe_file_name = "./verySecretProgram";
+    // getArgs(argc, argv, &func_name, &exe_file_name);
     int err = 1;
     unsigned long addr = find_symbol(func_name, exe_file_name, &err);
     if (err == -1)
@@ -188,13 +194,12 @@ int main(int argc, char *argv[])
         printf("PRF:: %s not found!\n", func_name);
         return 0;
     }
-
     // TODO: handle the case where the function is not defined in the executable file
     //  Ndx == UND
     if (err == -4)
     {
         addr = RELOCATABLE_ADDRESS;
     }
-    pid_t child_pid = runTarget(exe_file_name, argv);
+    pid_t child_pid = runTarget(exe_file_name);
     runFuncCounter(child_pid, addr, err == -4);
 }
