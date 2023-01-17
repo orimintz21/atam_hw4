@@ -22,25 +22,11 @@
 
 void getArgs(int argc, char *argv[], char **func_name, char **exe_file_name);
 pid_t runTarget(const char *func, char **argv);
-void runFuncCounter(pid_t child_pid, unsigned long func_addr, char *func_name, char *exe_file_name);
-void getRelAddress(pid_t child_pid, unsigned long *func_addr, char *func_name, char *exe_file_name);
+void runFuncCounter(pid_t child_pid, unsigned long func_addr, bool is_relocatable);
 long putBreakpointInFunc(unsigned long func_address, pid_t child_pid);
 void removeBreakpoint(pid_t child_pid, unsigned long func_addr, unsigned long data);
-bool AtReturnAddress(pid_t child_pid, unsigned long return_address);
+bool AtStackAddress(pid_t child_pid, unsigned long stack_address);
 void getRetAddress(pid_t child_pid, struct user_regs_struct *regs, unsigned long *ret_address);
-
-void getRelAddress(pid_t child_pid, unsigned long *func_addr, char *func_name, char *exe_file_name)
-{
-    // TODO
-    FILE *fp = fopen(exe_file_name, "r");
-    if (fp == NULL)
-    {
-        perror("fopen");
-        exit(1);
-    }
-
-    fclose(fp);
-}
 
 void getArgs(int argc, char *argv[], char **func_name, char **exe_file_name)
 {
@@ -94,11 +80,11 @@ void removeBreakpoint(pid_t child_pid, unsigned long func_addr, unsigned long da
     ptrace(PTRACE_SETREGS, child_pid, 0, &regs);
 }
 
-bool AtReturnAddress(pid_t child_pid, unsigned long return_address)
+bool AtStackAddress(pid_t child_pid, unsigned long stack_address)
 {
     struct user_regs_struct regs;
     ptrace(PTRACE_GETREGS, child_pid, NULL, &regs);
-    if (regs.rip - 1 == return_address)
+    if (regs.rsp == stack_address)
     {
         return true;
     }
@@ -110,57 +96,72 @@ void getRetAddress(pid_t child_pid, struct user_regs_struct *regs, unsigned long
     *ret_address = ptrace(PTRACE_PEEKTEXT, child_pid, regs->rsp, NULL);
 }
 
-void runFuncCounter(pid_t child_pid, unsigned long func_addr, char *func_name, char *exe_file_name)
+void runFuncCounter(pid_t child_pid, unsigned long func_addr, bool is_relocatable)
 {
-    if (func_addr == RELOCATABLE_ADDRESS)
-    {
-        getRelAddress(child_pid, &func_addr, func_name, exe_file_name);
-    }
+
     // initialize variables
     int wait_status, calls_counter = 0;
     struct user_regs_struct regs;
     unsigned long ret_address = 0;
     long ret_data = 0;
+    unsigned long stack_address = 0;
+    unsigned long got_entry_address = 0;
     waitpid(child_pid, &wait_status, 0);
 
+    if (is_relocatable)
+    {
+        got_entry_address = func_addr;
+        func_addr = ptrace(PTRACE_PEEKDATA, child_pid, (void *)got_entry_address, NULL);
+    }
     long first_func_command = putBreakpointInFunc(func_addr, child_pid);
 
     // run the program so it would get to the breakpoint
     ptrace(PTRACE_CONT, child_pid, NULL, NULL);
     waitpid(child_pid, &wait_status, 0);
+
     while (WIFSTOPPED(wait_status))
     {
-        if (regs.rip - 1 == func_addr)
+        if (regs.rip - 1 != func_addr)
         {
-
-            ptrace(PTRACE_GETREGS, child_pid, NULL, &regs);
-            getRetAddress(child_pid, &regs, &ret_address);
-            ret_data = putBreakpointInFunc(ret_address, child_pid);
-            removeBreakpoint(child_pid, func_addr, first_func_command);
             ptrace(PTRACE_CONT, child_pid, NULL, NULL);
             waitpid(child_pid, &wait_status, 0);
-            while (!AtReturnAddress(child_pid, ret_address) && WIFSTOPPED(wait_status))
+            continue;
+        }
+
+        ptrace(PTRACE_GETREGS, child_pid, NULL, &regs);
+        stack_address = regs.rsp + 8;
+
+        getRetAddress(child_pid, &regs, &ret_address);
+        ret_data = putBreakpointInFunc(ret_address, child_pid);
+        removeBreakpoint(child_pid, func_addr, first_func_command);
+        ptrace(PTRACE_CONT, child_pid, NULL, NULL);
+        waitpid(child_pid, &wait_status, 0);
+
+        while (!AtStackAddress(child_pid, stack_address) && WIFSTOPPED(wait_status))
+        {
+            removeBreakpoint(child_pid, ret_address, ret_data);
+            getRetAddress(child_pid, &regs, &ret_address);
+            ret_data = putBreakpointInFunc(ret_address, child_pid);
+            ptrace(PTRACE_CONT, child_pid, NULL, NULL);
+            waitpid(child_pid, &wait_status, 0);
+        }
+        if (WIFSTOPPED(wait_status))
+        {
+            calls_counter++;
+            ptrace(PTRACE_GETREGS, child_pid, NULL, &regs);
+            printf("PRF:: run #%d returned with %d\n", calls_counter, regs.rax);
+            removeBreakpoint(child_pid, ret_address, ret_data);
+            if (calls_counter == 1 && is_relocatable)
             {
-                ptrace(PTRACE_CONT, child_pid, NULL, NULL);
-                waitpid(child_pid, &wait_status, 0);
+                func_addr = ptrace(PTRACE_PEEKDATA, child_pid, (void *)got_entry_address, NULL);
             }
-            if (WIFSTOPPED(wait_status))
-            {
-                calls_counter++;
-                ptrace(PTRACE_GETREGS, child_pid, NULL, &regs);
-                printf("PRF:: run #%d returned with %d\n", calls_counter, regs.rax);
-                removeBreakpoint(child_pid, ret_address, ret_data);
-                first_func_command = putBreakpointInFunc(func_addr, child_pid);
-            }
-            else
-            {
-                printf("We have a stupid problem\n");
-            }
+            first_func_command = putBreakpointInFunc(func_addr, child_pid);
+            ptrace(PTRACE_CONT, child_pid, NULL, NULL);
+            waitpid(child_pid, &wait_status, 0);
         }
         else
         {
-            ptrace(PTRACE_CONT, child_pid, NULL, NULL);
-            waitpid(child_pid, &wait_status, 0);
+            printf("We have a stupid problem\n");
         }
     }
 }
@@ -195,5 +196,5 @@ int main(int argc, char *argv[])
         addr = RELOCATABLE_ADDRESS;
     }
     pid_t child_pid = runTarget(exe_file_name, argv);
-    runFuncCountCounter(child_pid, addr, func_name, exe_file_name);
+    runFuncCounter(child_pid, addr, err == -4);
 }

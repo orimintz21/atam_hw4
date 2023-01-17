@@ -90,9 +90,11 @@ unsigned long find_symbol(char *symbol_name, char *exe_file_name, int *error_val
 	if (symbol->st_shndx == SHN_UNDEF)
 	{
 		*error_val = -4;
+		unsigned long address = getRelAddress(fp, section_header, &elf_header, section_header_string_table, symbol_name);
 		freeAllAndClose(fp, section_header_string_table, symbol_table, string_table);
-		return 0;
+		return address;
 	}
+
 	*error_val = 1;
 	freeAllAndClose(fp, section_header_string_table, symbol_table, string_table);
 	return symbol->st_value;
@@ -158,6 +160,65 @@ Elf64_Sym *getSymbol(Elf64_Shdr *symbol_table_header, char *string_table, char *
 	return ret_symbol;
 }
 
+uint32_t getIndexOfSymInDynamic(Elf64_Shdr *dynsym_table_header, char *dynstr_table, char *dynsym_table, char *symbol_input)
+{
+	int num_of_symbols = dynsym_table_header->sh_size / dynsym_table_header->sh_entsize;
+	Elf64_Sym *ret_symbol = NULL;
+	int i = 0;
+	for (; i < num_of_symbols; ++i)
+	{
+		Elf64_Sym *symbol = (Elf64_Sym *)(dynsym_table + i * dynsym_table_header->sh_entsize);
+		char *symbol_name = dynstr_table + symbol->st_name;
+		if (strcmp(symbol_name, symbol_input) == 0)
+		{
+			return i;
+		}
+	}
+	return -1;
+}
+
+unsigned long getRelAddress(FILE *fp, Elf64_Shdr *section_header, Elf64_Ehdr *elf_header, char *section_header_string_table, char *symbol_name)
+{
+	int rel_index = getIndex(section_header, elf_header, section_header_string_table, ".rela.plt");
+	Elf64_Shdr rel_header = section_header[rel_index];
+	int dynsym_index = getIndex(section_header, elf_header, section_header_string_table, ".dynsym");
+	Elf64_Shdr dynsym_header = section_header[dynsym_index];
+	int dynstr_index = getIndex(section_header, elf_header, section_header_string_table, ".dynstr");
+	Elf64_Shdr dynstr_header = section_header[dynstr_index];
+
+	char *dynstr_table = (char *)malloc(dynstr_header.sh_size);
+	fseek(fp, dynstr_header.sh_offset, SEEK_SET);
+	fread(dynstr_table, dynstr_header.sh_size, 1, fp);
+
+	Elf64_Shdr *dynsym_table = (Elf64_Shdr *)malloc(dynsym_header.sh_size);
+	fseek(fp, dynsym_header.sh_offset, SEEK_SET);
+	fread(dynsym_table, dynsym_header.sh_size, 1, fp);
+
+	Elf64_Rela *rel_table = (Elf64_Rela *)malloc(rel_header.sh_size);
+	fseek(fp, rel_header.sh_offset, SEEK_SET);
+	fread(rel_table, rel_header.sh_size, 1, fp);
+
+	int index_of_sym = getIndexOfSymInDynamic(&dynsym_header, dynstr_table, (char *)dynsym_table, symbol_name);
+	unsigned long got_entry_addr = 0;
+
+	for (int i = 0; i < rel_header.sh_size / rel_header.sh_entsize; ++i)
+	{
+		Elf64_Rela *rel = (Elf64_Rela *)(rel_table + i * rel_header.sh_entsize);
+		if (ELF64_R_SYM(rel->r_info) == index_of_sym)
+		{
+			got_entry_addr = rel->r_offset;
+			free(dynstr_table);
+			free(dynsym_table);
+			free(rel_table);
+			return got_entry_addr;
+		}
+	}
+	free(dynstr_table);
+	free(dynsym_table);
+	free(rel_table);
+	return got_entry_addr;
+}
+
 Elf64_Phdr *getProgramHeader(FILE *fp, Elf64_Ehdr *elf_header)
 {
 	Elf64_Phdr *program_header = malloc(elf_header->e_phentsize * elf_header->e_phnum);
@@ -172,23 +233,4 @@ void freeAllAndClose(FILE *fp, char *section_header_string_table, char *symbol_t
 	free(symbol_table);
 	free(string_table);
 	fclose(fp);
-}
-
-int main(int argc, char *const argv[])
-{
-	int err = 0;
-
-	unsigned long addr = find_symbol(argv[1], argv[2], &err);
-
-	if (addr > 0)
-		printf("%s will be loaded to 0x%lx\n", argv[1], addr);
-	else if (err == -2)
-		printf("%s is not a global symbol! :(\n", argv[1]);
-	else if (err == -1)
-		printf("%s not found!\n", argv[1]);
-	else if (err == -3)
-		printf("%s not an executable! :(\n", argv[2]);
-	else if (err == -4)
-		printf("%s is a global symbol, but will come from a shared library\n", argv[1]);
-	return 0;
 }
