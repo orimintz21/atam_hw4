@@ -1,3 +1,10 @@
 kfir
 ref
 build
+expected
+README.txt
+run_tests.sh
+results
+test_src_files
+ATAMHW4TestV2.zip
+.vscode

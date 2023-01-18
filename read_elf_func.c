@@ -203,10 +203,10 @@ unsigned long getRelAddress(FILE *fp, Elf64_Shdr *section_header, Elf64_Ehdr *el
 
 	for (int i = 0; i < rel_header.sh_size / rel_header.sh_entsize; ++i)
 	{
-		Elf64_Rela *rel = (Elf64_Rela *)(rel_table + i * rel_header.sh_entsize);
-		if (ELF64_R_SYM(rel->r_info) == index_of_sym)
+		Elf64_Rela rel = rel_table[i];
+		if (ELF64_R_SYM(rel.r_info) == index_of_sym)
 		{
-			got_entry_addr = rel->r_offset;
+			got_entry_addr = rel.r_offset;
 			free(dynstr_table);
 			free(dynsym_table);
 			free(rel_table);
