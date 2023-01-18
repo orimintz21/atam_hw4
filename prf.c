@@ -176,9 +176,6 @@ void runFuncCounter(pid_t child_pid, unsigned long func_addr, bool is_relocatabl
 
 int main(int argc, char *argv[])
 {
-    // char *func_name = "foo";
-    // char *exe_file_name = "../out";
-    // char *a[4] = {NULL, "foo", "../out", NULL};
     char *func_name = argv[1];
     char *exe_file_name = argv[2];
     int err = 1;
